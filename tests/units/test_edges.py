@@ -67,7 +67,7 @@ def test_unreadable_subdirectory_does_not_silently_disappear(phase, tmp_path, mo
 @pytest.mark.parametrize('nested', [False, True])
 @pytest.mark.parametrize('target_kind', ['file', 'directory'])
 def test_internal_symlinks_remain_portable(tmp_path, absolute, nested, target_kind):
-    """Prevent incorrect link targets or following directory links into duplicate archive entries."""
+    """Prevent invalid Windows relative links and duplicated directory-link archive entries."""
     target = tmp_path / 'target'
     if target_kind == 'directory':
         target.mkdir()
@@ -78,7 +78,7 @@ def test_internal_symlinks_remain_portable(tmp_path, absolute, nested, target_ki
     directory.mkdir(exist_ok=True)
     expected = '../target' if nested else 'target'
     try:
-        (directory / 'link').symlink_to(target if absolute else expected, target_is_directory=target_kind == 'directory')
+        (directory / 'link').symlink_to(target if absolute else Path(expected), target_is_directory=target_kind == 'directory')
     except OSError:
         pytest.skip('Symlink privileges unavailable')
     with open_tar(fileobj=BytesIO(LiquidManager(tmp_path).read())) as archive:
@@ -206,8 +206,9 @@ def test_http_date_rounding_cannot_overestimate_remote_lease():
     assert deadline == 159
 
 
-@pytest.mark.parametrize('command', ['', ' ', 'x\0y', 'x' * 65537, None])
+@pytest.mark.parametrize('command', ['', ' ', 'x\0y', pytest.param('x' * 65537, id='too-long'), None])
 def test_invalid_command_does_not_contact_command_api(command, configured, api_stub):
+    """Reject invalid commands without overflowing Windows environment limits in pytest metadata."""
     with configured.scope as isolate:
         count = len(api_stub.requests)
         with pytest.raises(ValueError, match='Command must'):

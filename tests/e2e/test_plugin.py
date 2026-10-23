@@ -17,16 +17,30 @@ from liquidcomp.errors import MetadataError, ServerUnavailableError
 
 
 def python_command(source):
-    """Quote a Python program using the documented shell=false command grammar."""
+    """Quote a Python program with Linux text streams even on a Windows mock host."""
+    source = (
+        "import sys\n"
+        "sys.stdout.reconfigure(newline='\\n')\n"
+        "sys.stderr.reconfigure(newline='\\n')\n"
+        + source
+    )
     return shlex.quote(sys.executable) + ' -c ' + shlex.quote(source)
 
 
-@pytest.mark.parametrize('credential', ['valid-token', 'valid-company'])
-def test_installed_plugin_executes_chains_and_round_trips_state(mock_api, monkeypatch, tmp_path, credential):
-    """Protect plugin exclusions and explicit remote snapshots for both token types."""
+@pytest.mark.parametrize(('credential', 'newline'), [('valid-token', '\n'), ('valid-company', '\r\n')])
+def test_installed_plugin_executes_chains_and_round_trips_state(mock_api, monkeypatch, tmp_path, credential, newline):
+    """Protect plugin state round trips and Linux output despite Windows host newline defaults."""
     monkeypatch.setenv('LIQUID_TOKEN', credential)
     monkeypatch.setenv('LIQUID_API_URL', mock_api.url)
     monkeypatch.setenv('LIQUID_POLL_INTERVAL', '0.01')
+    startup = tmp_path / 'python-startup'
+    startup.mkdir()
+    (startup / 'sitecustomize.py').write_text(
+        'import sys\n'
+        f'sys.stdout.reconfigure(newline={newline!r})\n'
+        f'sys.stderr.reconfigure(newline={newline!r})\n',
+    )
+    monkeypatch.setenv('PYTHONPATH', str(startup))
     source = tmp_path / 'source'
     source.mkdir()
     (source / 'input.txt').write_text('original')
@@ -34,7 +48,9 @@ def test_installed_plugin_executes_chains_and_round_trips_state(mock_api, monkey
     manager = throng['liquid'](source, exclude=['secret'])['liquid']
     assert isinstance(manager, LiquidManager)
     with manager.scope as isolate:
-        assert isolate.run(python_command("from pathlib import Path; print(Path('input.txt').read_text())")).stdout == 'original\n'
+        output = isolate.run(python_command("import sys; from pathlib import Path; print(Path('input.txt').read_text()); print('diagnostic', file=sys.stderr)"))
+        assert output.stdout == 'original\n'
+        assert output.stderr == 'diagnostic\n'
         outputs = isolate.chain(
             python_command("from pathlib import Path; Path('output.txt').write_text('remote')"),
             python_command("from pathlib import Path; print(Path('output.txt').read_text())"),
