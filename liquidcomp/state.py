@@ -40,17 +40,16 @@ def read_state(path: Path, exclude: Optional[List[str]], limit: int) -> bytes:
                     relative = item.relative_to(root).as_posix()
                     kind = item.lstat().st_mode
                     is_directory = stat.S_ISDIR(kind)
-                    if spec.match_file(relative + ('/' if is_directory else '')):
-                        if name in dirs:
-                            dirs.remove(name)
-                        continue
-                    if not is_directory and not stat.S_ISREG(kind) and not stat.S_ISLNK(kind):
-                        raise StateError('State contains an unsupported special file.')
-                    if stat.S_ISREG(kind) and item.stat().st_size + buffer.tell() > limit:
-                        raise StateError('Initial state exceeds the configured artifact limit.')
-                    archive.add(item, arcname=relative, recursive=False, filter=portable)
-                    if buffer.tell() > limit:
-                        raise StateError('Initial state exceeds the configured artifact limit.')
+                    if not spec.match_file(relative + ('/' if is_directory else '')):
+                        if not is_directory and not stat.S_ISREG(kind) and not stat.S_ISLNK(kind):
+                            raise StateError('State contains an unsupported special file.')
+                        if stat.S_ISREG(kind) and item.stat().st_size + buffer.tell() > limit:
+                            raise StateError('Initial state exceeds the configured artifact limit.')
+                        archive.add(item, arcname=relative, recursive=False, filter=portable)
+                        if buffer.tell() > limit:
+                            raise StateError('Initial state exceeds the configured artifact limit.')
+                    elif name in dirs:
+                        dirs.remove(name)
     except (OSError, RuntimeError, ValueError, tarfile.TarError):
         raise StateError('Could not read the initial state safely.') from None
     state = buffer.getvalue()

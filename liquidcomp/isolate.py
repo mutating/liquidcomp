@@ -206,9 +206,9 @@ class LiquidIsolate(AbstractIsolate):
                     status = text(row.get('status'))
                     if status in TERMINAL:
                         result_payload = object_value(row.get('result'))
-                        if identifier(result_payload.get('command_id')) != command_id:
-                            raise ProtocolError('Terminal result belongs to a different command.')
-                        break
+                        if identifier(result_payload.get('command_id')) == command_id:
+                            break
+                        raise ProtocolError('Terminal result belongs to a different command.')
                     if status not in PENDING or row.get('result') is not None:
                         raise ProtocolError('Invalid command status/result combination.')
                     self._lease.stop.wait(float(settings.poll_interval))
