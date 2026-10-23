@@ -8,7 +8,7 @@ version = "0.0.1"
 authors = [
   { name="Evgeniy Blinov", email="zheni-b@yandex.ru" },
 ]
-description = ''
+description = 'Run throng commands on Liquid Compute'
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
@@ -16,6 +16,10 @@ dependencies = [
     'cantok>=0.0.42',
     'pristan>=0.0.24',
     'skelet>=0.0.21',
+    'httpx>=0.27,<1',
+    'keyring>=24.3,<26',
+    'pathspec>=0.12,<1',
+    'semver>=3,<4',
 ]
 classifiers = [
     "Operating System :: OS Independent",
@@ -50,6 +54,12 @@ keywords = [
 [tool.setuptools.package-data]
 "liquidcomp" = ["py.typed"]
 
+[project.scripts]
+liquid = "liquidcomp.cli:main"
+
+[project.entry-points.throng]
+liquid = "liquidcomp.plugin"
+
 [tool.setuptools.packages.find]
 include = ["liquidcomp*"]
 
@@ -71,6 +81,10 @@ lint.ignore = ['E501', 'E712', 'PTH123', 'PTH118', 'PLR2004', 'PTH107', 'SIM105'
 lint.select = ["ERA001", "YTT", "ASYNC", "BLE", "B", "A", "COM", "INP", "PIE", "T20", "PT", "RSE", "RET", "SIM", "SLOT", "TID252", "ARG", "PTH", "I", "C90", "N", "E", "W", "D201", "D202", "D419", "F", "PL", "PLE", "PLR", "PLW", "RUF", "TRY201", "TRY400", "TRY401"]
 lint.isort.combine-as-imports = true
 format.quote-style = "single"
+
+# Pytest fixtures and mock callbacks are intentionally requested for side effects.
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG001", "ARG005", "PLR0913"]
 
 [project.urls]
 'Source' = 'https://github.com/mutating/liquidcomp'
