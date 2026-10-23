@@ -3,6 +3,7 @@
 import gc
 import hashlib
 import os
+import stat
 import threading
 import time
 import weakref
@@ -102,12 +103,22 @@ def test_state_size_limit_includes_archive_overhead(tmp_path, mode):
         LiquidManager(tmp_path, settings=Settings(max_artifact_bytes=128)).read()
 
 
-def test_special_file_is_not_uploaded(tmp_path):
-    """Named pipes must never block reading the initial state."""
-    if not hasattr(os, 'mkfifo'):
-        pytest.skip('Named pipes unavailable')
-    os.mkfifo(tmp_path / 'pipe')
-    with pytest.raises(StateError):
+@pytest.mark.parametrize('native', [False, True])
+def test_special_file_is_not_uploaded(tmp_path, monkeypatch, native):
+    """Prevent special files from blocking state reads, including hosts without mkfifo."""
+    pipe = tmp_path / 'pipe'
+    if native:
+        if not hasattr(os, 'mkfifo'):
+            pytest.skip('Named pipes unavailable')
+        os.mkfifo(pipe)
+    else:
+        pipe.touch()
+        original_lstat = Path.lstat
+        def lstat(path):
+            info = original_lstat(path)
+            return os.stat_result((stat.S_IFIFO, *info[1:])) if path == pipe else info
+        monkeypatch.setattr(Path, 'lstat', lstat)
+    with pytest.raises(StateError, match='unsupported special file'):
         LiquidManager(tmp_path).read()
 
 
