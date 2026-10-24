@@ -1,8 +1,10 @@
 """The installed plugin crosses a real HTTP boundary for commands and benchmarks."""
 
 import shlex
+import shutil
 import subprocess
 import sys
+import sysconfig
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from tarfile import open as open_tar
@@ -29,7 +31,7 @@ def python_command(source):
 
 @pytest.mark.parametrize(('credential', 'newline'), [('valid-token', '\n'), ('valid-company', '\r\n')])
 def test_installed_plugin_executes_chains_and_round_trips_state(mock_api, monkeypatch, tmp_path, credential, newline):
-    """Protect plugin state round trips and Linux output despite Windows host newline defaults."""
+    """Protect single-plugin selection, state round trips and Linux output on Windows mock hosts."""
     monkeypatch.setenv('LIQUID_TOKEN', credential)
     monkeypatch.setenv('LIQUID_API_URL', mock_api.url)
     monkeypatch.setenv('LIQUID_POLL_INTERVAL', '0.01')
@@ -45,7 +47,7 @@ def test_installed_plugin_executes_chains_and_round_trips_state(mock_api, monkey
     source.mkdir()
     (source / 'input.txt').write_text('original')
     (source / 'secret').write_text('excluded')
-    manager = throng['liquid'](source, exclude=['secret'])['liquid']
+    manager = throng['liquid'].one(source, exclude=['secret'])
     assert isinstance(manager, LiquidManager)
     with manager.scope as isolate:
         output = isolate.run(python_command("import sys; from pathlib import Path; print(Path('input.txt').read_text()); print('diagnostic', file=sys.stderr)"))
@@ -139,11 +141,18 @@ def test_parallel_isolates_have_independent_state(mock_api, monkeypatch, tmp_pat
 
 
 @pytest.mark.parametrize(('token', 'expected', 'word'), [(None, 1, 'missing'), ('valid-token', 0, 'valid'), ('bad', 1, 'invalid')])
-def test_cli_status_subprocess(cli_environment, token, expected, word):
-    """Prevent invalid/disconnected labels from passing substring checks for valid/connected status."""
+@pytest.mark.parametrize('entrypoint', ['module', 'console'])
+def test_cli_status_subprocess(cli_environment, token, expected, word, entrypoint):
+    """Prevent missing console scripts or invalid/disconnected labels from passing CLI checks."""
     if token is not None:
         cli_environment['LIQUID_TOKEN'] = token
-    process = subprocess.run([sys.executable, '-m', 'liquidcomp', 'status'], env=cli_environment, input='', capture_output=True, text=True, timeout=15, check=False)
+    if entrypoint == 'module':
+        command = [sys.executable, '-m', 'liquidcomp']
+    else:
+        executable = shutil.which('liquid', path=sysconfig.get_path('scripts'))
+        assert executable is not None
+        command = [executable]
+    process = subprocess.run([*command, 'status'], env=cli_environment, input='', capture_output=True, text=True, timeout=15, check=False)
     assert process.returncode == expected, process.stderr
     assert any(line.startswith('Token: ' + word) for line in process.stdout.splitlines())
     assert 'Server: connected, ready' in process.stdout.splitlines()

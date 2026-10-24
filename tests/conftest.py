@@ -53,7 +53,7 @@ def clean_environment(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def terminal(monkeypatch, capsys):
+def terminal(monkeypatch):
     """Advertise terminal capability only when getpass itself is replaced by a test."""
     monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
     monkeypatch.setattr(liquidcomp.auth, 'sys', SimpleNamespace(
@@ -133,7 +133,8 @@ def api_stub(monkeypatch):
 
 
 @pytest.fixture
-def configured(api_stub, monkeypatch):
+def configured(request, monkeypatch):
     """A credentialed manager with fast polling and no real HTTP or keychain access."""
+    request.getfixturevalue('api_stub')
     monkeypatch.setenv('LIQUID_TOKEN', 'valid-token')
     return LiquidManager(settings=Settings(poll_interval=0.01, retry_backoff=0.0))

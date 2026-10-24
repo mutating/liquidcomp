@@ -49,7 +49,7 @@ def test_changed_api_endpoint_uses_its_own_keyring_namespace(api_stub, clean_env
 def test_unreadable_subdirectory_does_not_silently_disappear(phase, tmp_path, monkeypatch):
     """Prevent root permission errors from escaping StateError or silently producing partial state."""
     manager = LiquidManager(tmp_path)
-    def walk(_root, *, followlinks, onerror=None):
+    def walk(_root, *, onerror=None, **_kwargs):
         if onerror is not None:
             onerror(PermissionError('unreadable source directory'))
         return iter([])
