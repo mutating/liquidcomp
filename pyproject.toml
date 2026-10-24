@@ -82,10 +82,6 @@ lint.select = ["ERA001", "YTT", "ASYNC", "BLE", "B", "A", "COM", "INP", "PIE", "
 lint.isort.combine-as-imports = true
 format.quote-style = "single"
 
-# Pytest fixtures and mock callbacks are intentionally requested for side effects.
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ARG001", "ARG005", "PLR0913"]
-
 [project.urls]
 'Source' = 'https://github.com/mutating/liquidcomp'
 'Tracker' = 'https://github.com/mutating/liquidcomp/issues'
