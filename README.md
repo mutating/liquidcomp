@@ -17,7 +17,7 @@ Installing the package automatically registers the `liquid` throng plugin:
 ```python
 from throng import throng
 
-manager = throng['liquid']('./project')['liquid']
+manager = throng['liquid'].one('./project')
 result = manager.run('python3 task.py')
 print(result.stdout)
 
