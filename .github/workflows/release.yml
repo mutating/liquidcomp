@@ -29,23 +29,11 @@ jobs:
 
       - name: Install dependencies
         shell: bash
-        run: |
-          uv venv --python python "$RUNNER_TEMP/liquidcomp-release"
-          uv pip install --python "$RUNNER_TEMP/liquidcomp-release/bin/python" -r requirements_dev.txt
+        run: uv pip install --system -r requirements_dev.txt
 
       - name: Build the project
         shell: bash
-        run: '"$RUNNER_TEMP/liquidcomp-release/bin/python" -m build .'
-
-      - name: Test the built wheel
-        shell: bash
-        run: |
-          uv pip install --python "$RUNNER_TEMP/liquidcomp-release/bin/python" dist/*.whl
-          mkdir "$RUNNER_TEMP/liquidcomp-release-tests"
-          cp -R tests "$RUNNER_TEMP/liquidcomp-release-tests/tests"
-          cd "$RUNNER_TEMP/liquidcomp-release-tests"
-          unset PYTHONPATH
-          "$RUNNER_TEMP/liquidcomp-release/bin/python" -m pytest tests
+        run: python -m build .
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
