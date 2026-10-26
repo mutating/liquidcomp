@@ -69,3 +69,40 @@ jobs:
         LIQUIDCOMP_COVERAGE_BRANCH=true COVERAGE_PROCESS_START="$PWD/pyproject.toml" coverage run -m pytest -n auto --cache-clear --assert=plain
         coverage combine
         coverage report -m --fail-under=100
+
+  wheel:
+    name: Test the built wheel
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        uv venv --python python "$RUNNER_TEMP/liquidcomp-wheel"
+        uv pip install --python "$RUNNER_TEMP/liquidcomp-wheel/bin/python" -r requirements_dev.txt
+
+    - name: Build and install the wheel
+      shell: bash
+      run: |
+        "$RUNNER_TEMP/liquidcomp-wheel/bin/python" -m build .
+        uv pip install --python "$RUNNER_TEMP/liquidcomp-wheel/bin/python" dist/*.whl
+
+    - name: Run e2e against the installed wheel
+      shell: bash
+      run: |
+        mkdir "$RUNNER_TEMP/liquidcomp-wheel-tests"
+        cp -R tests "$RUNNER_TEMP/liquidcomp-wheel-tests/tests"
+        cd "$RUNNER_TEMP/liquidcomp-wheel-tests"
+        unset PYTHONPATH
+        "$RUNNER_TEMP/liquidcomp-wheel/bin/python" -m pytest tests/e2e
