@@ -5,6 +5,7 @@ import json
 import ntpath
 import os
 import stat
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -478,14 +479,20 @@ def test_package_installation_quotes_arguments_and_propagates_failure(extra_pack
 
 
 @pytest.mark.parametrize('records', [[], ['single_core'], ['multi_core'], ['single_core', 'multi_core']])
-@pytest.mark.parametrize(('score_pair', 'cpu'), [((0, 123.5), 1), ((123.5, 0), 1), ((123.5, 456), 2.5)])
-def test_benchmarks_are_optional_independently_and_fresh(records, score_pair, cpu, configured, api_stub):
-    """Protect independent scores and dates without rescaling, dropping zeros or inventing data."""
+@pytest.mark.parametrize('benchmark_case', [
+    ((0, 123.5), 1, '0.0.2'),
+    ((123.5, 0), 1, '1.10.0-rc.2+build.7'),
+    ((123.5, 456), 2.5, '2.0.0+build.01'),
+    ((5e-324, sys.float_info.max), 1, '0.0.0'),
+])
+def test_benchmarks_are_optional_independently_and_fresh(records, benchmark_case, configured, api_stub):
+    """Prevent hardcoded versions, rescaled scores, lost precision and fabricated missing measurements."""
+    score_pair, cpu, version = benchmark_case
     configured.settings.cpu = cpu
     scores = {'single_core': score_pair[0], 'multi_core': score_pair[1]}
-    dates = {'single_core': '2026-10-19T12:30:00Z', 'multi_core': '2026-10-19T12:31:00Z'}
+    dates = {'single_core': '2026-10-19T12:30:00.123456Z', 'multi_core': '2026-10-19T12:31:00.654321Z'}
     rows = [{'computer_id': api_stub.computer_id, 'benchmark_name': name,
-             'number': scores[name], 'created_at': dates[name], 'benchmarker_version': '0.0.2'} for name in records]
+             'number': scores[name], 'created_at': dates[name], 'benchmarker_version': version} for name in records]
     api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda _request: httpx.Response(200, json=rows)
     with configured.scope as isolate:
         metadata = isolate.meta
@@ -497,7 +504,7 @@ def test_benchmarks_are_optional_independently_and_fresh(records, score_pair, cp
             assert (value is None) == (name not in records)
             if value is not None:
                 assert value.number == scores[name]
-                assert value.benchmarker_version == '0.0.2'
+                assert value.benchmarker_version == version
                 assert value.benchmarker == 'benchset'
                 assert value.when == datetime.fromisoformat(dates[name].replace('Z', '+00:00'))
         rows.clear()
