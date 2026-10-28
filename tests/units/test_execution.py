@@ -5,6 +5,7 @@ import json
 import ntpath
 import os
 import stat
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -139,7 +140,7 @@ def test_runtime_has_no_settings_override():
 @pytest.mark.parametrize('status', ['completed', 'failed', 'cancelled', 'timed_out', 'isolate_failed'])
 def test_terminal_results_and_standard_throng_exception_mode(status, configured, api_stub):
     """Preserve server truth even for cancellation and process-launch failure."""
-    api_stub.routes['POST', '/v1/commands/results'] = lambda request: result(
+    api_stub.routes['POST', '/v1/commands/results'] = lambda _request: result(
         api_stub, status, success=False, returncode=None, stdout=None, stderr='failure', error='failed',
     )
     with configured.scope as isolate:
@@ -158,7 +159,7 @@ def test_terminal_results_and_standard_throng_exception_mode(status, configured,
 @pytest.mark.parametrize('mutation', ['null', 'unknown_status', 'wrong_id', 'bad_bool', 'bad_returncode', 'missing_result', 'bad_stdout', 'bad_stderr', 'bad_error'])
 def test_malformed_command_responses_are_not_success(mutation, configured, api_stub):
     """Prevent malformed output/diagnostics or mismatched replies from becoming successful results."""
-    def malformed(request):
+    def malformed(_request):
         payload = json.loads(result(api_stub).content)
         if mutation == 'null':
             return httpx.Response(200, json=None)
@@ -205,7 +206,7 @@ def test_cancellation_waits_for_confirmation_and_preserves_winning_completion(pe
     token = SimpleToken()
     cancel_seen = threading.Event()
     polls = []
-    def cancel(request):
+    def cancel(_request):
         cancel_seen.set()
         return httpx.Response(202, json=[{'id': api_stub.command_id, 'status': 'cancel_requested'}])
     def poll(request):
@@ -242,11 +243,11 @@ def test_unconfirmed_cancellation_is_bounded(poll_interval, configured, api_stub
         cancel_seen.set()
         return httpx.Response(202)
     api_stub.routes['POST', '/v1/commands/cancel'] = cancel
-    api_stub.routes['POST', '/v1/commands/results'] = lambda request: httpx.Response(
+    api_stub.routes['POST', '/v1/commands/results'] = lambda _request: httpx.Response(
         200, json=[{'id': api_stub.command_id, 'status': 'running', 'result': None}],
     )
     token = SimpleToken()
-    def command(request):
+    def command(_request):
         token.cancel()
         return httpx.Response(202, json={'id': api_stub.command_id, 'queued_deadline': (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()})
     api_stub.routes['POST', f'/v1/isolates/{api_stub.isolate_id}/commands'] = command
@@ -262,7 +263,7 @@ def test_unconfirmed_cancellation_is_bounded(poll_interval, configured, api_stub
 
 def test_failed_provisioning_is_cleaned_up(configured, api_stub):
     """A known remote allocation is destroyed when provisioning fails."""
-    api_stub.routes['POST', '/v1/isolates'] = lambda request: httpx.Response(202, json={'id': api_stub.isolate_id, 'status': 'failed'})
+    api_stub.routes['POST', '/v1/isolates'] = lambda _request: httpx.Response(202, json={'id': api_stub.isolate_id, 'status': 'failed'})
     with pytest.raises(IsolateUnavailableError):
         configured.get(b'state')
     assert any(r.method == 'DELETE' and r.url.path.endswith(api_stub.isolate_id) for r in api_stub.requests)
@@ -285,7 +286,7 @@ def test_provisioning_timeout_is_bounded_and_cleaned_up(poll_interval, configure
         clock[0] += delay
     monkeypatch.setattr(manager_module, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
     for method, path in [('POST', '/v1/isolates'), ('GET', f'/v1/isolates/{api_stub.isolate_id}')]:
-        api_stub.routes[method, path] = lambda request: httpx.Response(202, json={'id': api_stub.isolate_id, 'status': 'provisioning', 'expires_at': '2099-01-01T00:00:00Z'})
+        api_stub.routes[method, path] = lambda _request: httpx.Response(202, json={'id': api_stub.isolate_id, 'status': 'provisioning', 'expires_at': '2099-01-01T00:00:00Z'})
     try:
         with pytest.raises(OperationTimeoutError):
             configured.get(b'state')
@@ -305,7 +306,7 @@ def test_lease_renewal_is_independent_of_command_execution(phase, configured, ap
     configured.settings.renew_interval = 0.02
     heartbeat = threading.Condition()
     renewals = 0
-    def renew(request):
+    def renew(_request):
         nonlocal renewals
         with heartbeat:
             renewals += 1
@@ -336,10 +337,12 @@ def test_lease_renewal_is_independent_of_command_execution(phase, configured, ap
 
 
 def test_renewal_failure_unblocks_waiting_command(configured, api_stub):
-    """A lost lease fails the waiter instead of leaving a daemon failure invisible."""
+    """Fail a waiting command on lease loss without racing isolate allocation."""
     configured.settings.renew_interval = 0.02
-    api_stub.routes['POST', f'/v1/isolates/{api_stub.isolate_id}/renew'] = lambda request: httpx.Response(409)
-    api_stub.routes['POST', '/v1/commands/results'] = lambda request: httpx.Response(200, json=[{'id': api_stub.command_id, 'status': 'running', 'result': None}])
+    def poll(_request):
+        api_stub.routes['POST', f'/v1/isolates/{api_stub.isolate_id}/renew'] = lambda _request: httpx.Response(409)
+        return httpx.Response(200, json=[{'id': api_stub.command_id, 'status': 'running', 'result': None}])
+    api_stub.routes['POST', '/v1/commands/results'] = poll
     with configured.scope as isolate, pytest.raises((IsolateUnavailableError, APIError)):
         isolate.run('work')
 
@@ -422,7 +425,7 @@ def test_commands_on_one_isolate_are_serialized_through_result(phase, configured
 def test_output_artifact_overrides_inline_preview_and_keeps_binary(stream, configured, api_stub):
     """Prevent either stream from losing full binary output or incorrectly retaining its inline preview."""
     api_stub.content = b'full output\xff'
-    api_stub.routes['POST', '/v1/commands/results'] = lambda request: result(
+    api_stub.routes['POST', '/v1/commands/results'] = lambda _request: result(
         api_stub, **{stream: 'preview', stream + '_artifact_id': api_stub.artifact_id},
     )
     with configured.scope as isolate:
@@ -436,7 +439,7 @@ def test_invalid_artifact_is_not_returned(failure, configured, api_stub, byte_st
     """Prevent corrupt snapshots or oversized artifacts with valid checksums from being returned."""
     content = b'payload'
     checksum = hashlib.sha256(b'other' if failure == 'checksum' else content).hexdigest()
-    api_stub.routes['GET', f'/v1/artifacts/{api_stub.artifact_id}/content'] = lambda request: (
+    api_stub.routes['GET', f'/v1/artifacts/{api_stub.artifact_id}/content'] = lambda _request: (
         httpx.Response(200, stream=byte_stream([content[:4], content[4:]]), headers={'X-Content-SHA256': checksum})
         if failure == 'oversize_stream' else httpx.Response(200, content=content, headers={'X-Content-SHA256': checksum})
     )
@@ -455,7 +458,7 @@ def test_setup_failure_uses_throng_cleanup(phase, error, entrypoint, configured,
         LiquidManager(settings=configured.settings, **{phase: ['failing']}) if entrypoint == 'direct'
         else throng['liquid']('.', **{phase: ['failing']})['liquid']
     )
-    api_stub.routes['POST', '/v1/commands/results'] = lambda request: result(api_stub, success=False, returncode=1)
+    api_stub.routes['POST', '/v1/commands/results'] = lambda _request: result(api_stub, success=False, returncode=1)
     with pytest.raises(error):
         manager.get(b'state')
     assert any(r.method == 'DELETE' for r in api_stub.requests)
@@ -470,7 +473,7 @@ def test_package_installation_quotes_arguments_and_propagates_failure(extra_pack
         isolate.install(*packages)
         commands = [json.loads(r.content)['command'] for r in api_stub.requests if r.url.path.endswith('/commands')]
         assert commands == expected
-        api_stub.routes['POST', '/v1/commands/results'] = lambda request: result(api_stub, success=False, returncode=1)
+        api_stub.routes['POST', '/v1/commands/results'] = lambda _request: result(api_stub, success=False, returncode=1)
         with pytest.raises(CannotInstallDependencyError):
             isolate.install('example', 'never-installed')
         commands = [json.loads(r.content)['command'] for r in api_stub.requests if r.url.path.endswith('/commands')]
@@ -478,15 +481,21 @@ def test_package_installation_quotes_arguments_and_propagates_failure(extra_pack
 
 
 @pytest.mark.parametrize('records', [[], ['single_core'], ['multi_core'], ['single_core', 'multi_core']])
-@pytest.mark.parametrize(('single_score', 'multi_score', 'cpu'), [(0, 123.5, 1), (123.5, 0, 1), (123.5, 456, 2.5)])
-def test_benchmarks_are_optional_independently_and_fresh(records, single_score, multi_score, cpu, configured, api_stub):
-    """Protect independent scores and dates without rescaling, dropping zeros or inventing data."""
+@pytest.mark.parametrize('benchmark_case', [
+    ((0, 123.5), 1, '0.0.2'),
+    ((123.5, 0), 1, '1.10.0-rc.2+build.7'),
+    ((123.5, 456), 2.5, '2.0.0+build.01'),
+    ((5e-324, sys.float_info.max), 1, '0.0.0'),
+])
+def test_benchmarks_are_optional_independently_and_fresh(records, benchmark_case, configured, api_stub):
+    """Prevent hardcoded versions, rescaled scores, lost precision and fabricated missing measurements."""
+    score_pair, cpu, version = benchmark_case
     configured.settings.cpu = cpu
-    scores = {'single_core': single_score, 'multi_core': multi_score}
-    dates = {'single_core': '2026-10-19T12:30:00Z', 'multi_core': '2026-10-19T12:31:00Z'}
+    scores = {'single_core': score_pair[0], 'multi_core': score_pair[1]}
+    dates = {'single_core': '2026-10-19T12:30:00.123456Z', 'multi_core': '2026-10-19T12:31:00.654321Z'}
     rows = [{'computer_id': api_stub.computer_id, 'benchmark_name': name,
-             'number': scores[name], 'created_at': dates[name], 'benchmarker_version': '0.0.2'} for name in records]
-    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda request: httpx.Response(200, json=rows)
+             'number': scores[name], 'created_at': dates[name], 'benchmarker_version': version} for name in records]
+    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda _request: httpx.Response(200, json=rows)
     with configured.scope as isolate:
         metadata = isolate.meta
         assert metadata.id == isolate.get_id()
@@ -497,7 +506,7 @@ def test_benchmarks_are_optional_independently_and_fresh(records, single_score, 
             assert (value is None) == (name not in records)
             if value is not None:
                 assert value.number == scores[name]
-                assert value.benchmarker_version == '0.0.2'
+                assert value.benchmarker_version == version
                 assert value.benchmarker == 'benchset'
                 assert value.when == datetime.fromisoformat(dates[name].replace('Z', '+00:00'))
         rows.clear()
@@ -524,7 +533,7 @@ def test_malformed_benchmark_records_are_errors_not_missing_data(bad, configured
         rows.append(dict(row))
     else:
         rows.append({**row, 'benchmark_name': 'multi_core', 'benchmarker_version': '0.0.3'})
-    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda request: httpx.Response(200, json=rows)
+    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda _request: httpx.Response(200, json=rows)
     with configured.scope as isolate, pytest.raises(MetadataError):
         isolate.get_benchmarks()
 
@@ -532,7 +541,7 @@ def test_malformed_benchmark_records_are_errors_not_missing_data(bad, configured
 @pytest.mark.parametrize('status', [401, 403, 404, 503])
 def test_metadata_access_errors_do_not_stop_command_execution(status, configured, api_stub):
     """An inaccessible measurement endpoint is distinct from an empty benchmark suite."""
-    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda request: httpx.Response(status)
+    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda _request: httpx.Response(status)
     with configured.scope as isolate:
         with pytest.raises(MetadataError):
             isolate.get_benchmarks()
@@ -542,7 +551,7 @@ def test_metadata_access_errors_do_not_stop_command_execution(status, configured
 @pytest.mark.parametrize('field', ['single_core', 'multi_core'])
 def test_unknown_future_benchmarks_do_not_break_metadata(field, configured, api_stub):
     """Prevent unknown benchmark names from being misclassified into either known score field."""
-    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda request: httpx.Response(200, json=[{
+    api_stub.routes['GET', f'/v1/computers/{api_stub.computer_id}/benchmark-results'] = lambda _request: httpx.Response(200, json=[{
         'computer_id': api_stub.computer_id, 'benchmark_name': 'future_gpu', 'number': 9,
         'created_at': '2026-10-19T12:30:00Z', 'benchmarker_version': '1.0.0',
     }])

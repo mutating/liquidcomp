@@ -17,7 +17,7 @@ Installing the package automatically registers the `liquid` throng plugin:
 ```python
 from throng import throng
 
-manager = throng['liquid']('./project')['liquid']
+manager = throng['liquid'].one('./project')
 result = manager.run('python3 task.py')
 print(result.stdout)
 
@@ -138,7 +138,7 @@ with manager.scope as isolate:
 
 The plugin requests `/v1/computers/{computer_id}/benchmark-results?latest_only=true` for the allocated computer. It maps `single_core` and `multi_core` to throng's benchset results. Scores describe the whole computer and are not rescaled to the isolate's resource reservation. `shared=True`; `shared_with=None` because the API does not report the current sharing count.
 
-An empty suite or an absent individual measurement becomes `None`. Only the latest suite is used; an older result is never substituted for a missing newer measurement. Unknown future benchmark names are ignored. Each access fetches fresh metadata. `when` is the API's timezone-aware `created_at`, normalized to UTC. Currently the server preserves `created_at` when upserting the same benchmark/version, so it may describe the first recorded measurement rather than the most recent rerun.
+An empty suite or an absent individual measurement becomes `None`. Only the greatest benchset version is used; within that version, the API returns the latest measurement of each benchmark. An older version is never substituted for a missing measurement. Unknown future benchmark names are ignored. Each access fetches fresh metadata. `when` is the latest result's timezone-aware `created_at`, normalized to UTC with microsecond precision. A new run of the same benchmark/version provides a new date; replaying the same run preserves its date. This requires the API's benchmark run history support. The date records when the server first stored that run, which can differ from when the agent executed it if uploading was delayed.
 
 Permission, network, HTTP, and malformed-data failures raise `MetadataError`, rather than pretending that benchmarks are absent. A metadata failure does not disable subsequent commands. Scores, versions, dates, resource identity, duplicate records, and suite consistency are validated. A closed or failed isolate still raises its lifecycle error.
 

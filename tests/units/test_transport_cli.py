@@ -52,7 +52,7 @@ def test_artifact_upload_is_not_replayed_after_uncertain_response(configured, ap
 
 def test_redirects_never_forward_credentials(configured, api_stub):
     """A redirected API cannot redirect the bearer token to another origin."""
-    api_stub.routes['GET', '/v1/auth/check'] = lambda request: httpx.Response(302, headers={'Location': 'https://other.invalid/steal'})
+    api_stub.routes['GET', '/v1/auth/check'] = lambda _request: httpx.Response(302, headers={'Location': 'https://other.invalid/steal'})
     with pytest.raises(APIError):
         configured.get(b'state')
     assert len(api_stub.requests) == 1
@@ -75,7 +75,7 @@ def test_upload_response_is_bounded_and_validated(mode, configured, api_stub, by
             'id': '../../escape' if mode == 'bad_id' else api_stub.artifact_id,
             'sha256': hashlib.sha256(b'state').hexdigest() if mode == 'bad_id' else 'bad',
         })
-    api_stub.routes['POST', '/v1/artifacts'] = lambda request: response
+    api_stub.routes['POST', '/v1/artifacts'] = lambda _request: response
     with pytest.raises(ProtocolError):
         configured.get(b'state')
     assert not any(request.url.path == '/v1/isolates' for request in api_stub.requests)
@@ -87,9 +87,9 @@ def test_upload_response_is_bounded_and_validated(mode, configured, api_stub, by
 def test_cli_calls_the_manager_method(command, monkeypatch, capsys):
     """CLI dispatch shares the public manager entrypoints instead of duplicating dialogs."""
     calls = []
-    def init(self):
+    def init(_self):
         calls.append('init')
-    def status(self):
+    def status(_self):
         calls.append('status')
         return Status(True, True, True, True, 'environment')
     monkeypatch.setattr(LiquidManager, 'init', init)
@@ -100,7 +100,8 @@ def test_cli_calls_the_manager_method(command, monkeypatch, capsys):
         assert 'Token: valid (environment)' in capsys.readouterr().out.splitlines()
 
 
-def test_cli_status_has_failure_exit_code_without_prompt(api_stub, capsys):
+@pytest.mark.usefixtures('api_stub')
+def test_cli_status_has_failure_exit_code_without_prompt(capsys):
     """A missing token is useful diagnostics, with a nonzero command exit status."""
     assert main(['status']) == 1
     output = capsys.readouterr().out
@@ -108,7 +109,8 @@ def test_cli_status_has_failure_exit_code_without_prompt(api_stub, capsys):
     assert 'Server: connected, ready' in output.splitlines()
 
 
-def test_cli_init_reports_noninteractive_failure_without_traceback(api_stub, capsys):
+@pytest.mark.usefixtures('api_stub')
+def test_cli_init_reports_noninteractive_failure_without_traceback(capsys):
     """CLI errors are concise and never invoke an echoed fallback."""
     assert main(['init']) == 1
     assert 'Traceback' not in capsys.readouterr().err
@@ -152,13 +154,14 @@ def test_stream_response_has_a_total_read_budget(dribble, configured, api_stub, 
         configured.get(b'state')
 
 
-@pytest.mark.parametrize(('connected', 'valid', 'error', 'expected'), [
-    (False, None, 'Could not connect.', 'unknown validity'),
-    (False, False, None, 'invalid or insufficient permissions'),
-    (True, True, None, 'valid'),
+@pytest.mark.parametrize(('status', 'expected'), [
+    ((False, None, 'Could not connect.'), 'unknown validity'),
+    ((False, False, None), 'invalid or insufficient permissions'),
+    ((True, True, None), 'valid'),
 ])
-def test_cli_status_reports_uncertainty_and_errors(connected, valid, error, expected, monkeypatch, capsys):
+def test_cli_status_reports_uncertainty_and_errors(status, expected, monkeypatch, capsys):
     """Prevent a reachable but unready server from producing a successful CLI status."""
+    connected, valid, error = status
     monkeypatch.setattr(LiquidManager, 'status', lambda _self: Status(connected, False, True, valid, 'keyring', error))
     assert main(['status']) == 1
     output = capsys.readouterr().out

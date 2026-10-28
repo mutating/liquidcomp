@@ -68,12 +68,13 @@ def test_manager_construction_and_read_do_not_resolve_credentials(clean_environm
     assert not api_stub.requests
 
 
-@pytest.mark.parametrize(('value', 'ask_for_token'), [
+@pytest.mark.parametrize('case', [
     ('', False), (' ', False), ('bad token', False), ('bad\ntoken', False), ('', True),
 ])
 @pytest.mark.parametrize('source', ['environment', 'keyring'])
-def test_invalid_credential_never_falls_back(value, ask_for_token, source, monkeypatch, clean_environment, api_stub):
+def test_invalid_credential_never_falls_back(case, source, monkeypatch, clean_environment, api_stub):
     """Prevent sending malformed saved tokens or replacing an authoritative invalid credential."""
+    value, ask_for_token = case
     slot = ('liquidcomp:https://api.mutating.tech/v1', 'LIQUID_TOKEN')
     clean_environment.values[slot] = value if source == 'keyring' else 'stored-valid'
     if source == 'environment':
@@ -88,7 +89,7 @@ def test_invalid_credential_never_falls_back(value, ask_for_token, source, monke
 def test_rejected_environment_token_is_not_replaced(status, error, monkeypatch, api_stub, clean_environment):
     """A server denial neither reads keyring nor uploads state or prompts."""
     monkeypatch.setenv('LIQUID_TOKEN', 'rejected')
-    api_stub.routes['GET', '/v1/auth/check'] = lambda request: httpx.Response(status)
+    api_stub.routes['GET', '/v1/auth/check'] = lambda _request: httpx.Response(status)
     with pytest.raises(error):
         LiquidManager(settings=Settings(ask_for_token=True)).get(b'state')
     assert not clean_environment.reads
@@ -107,16 +108,17 @@ def test_keyring_credential_is_namespaced_by_server(api_stub, clean_environment)
 
 
 @pytest.mark.parametrize('location', ['get', 'set'])
-def test_keyring_failure_is_not_treated_as_a_missing_secret(location, monkeypatch, api_stub, terminal, capsys):
+@pytest.mark.usefixtures('api_stub', 'terminal')
+def test_keyring_failure_is_not_treated_as_a_missing_secret(location, monkeypatch, capsys):
     """Prevent vault failures from triggering replacement or falsely thanking for a failed save."""
-    def fail(*args):
+    def fail(*_args):
         raise keyring.errors.KeyringError('private backend data')
     if location == 'get':
         monkeypatch.setattr(keyring, 'get_password', fail)
         action = lambda: LiquidManager(settings=Settings(ask_for_token=True)).get(b'state')
     else:
         monkeypatch.setattr(keyring, 'set_password', fail)
-        monkeypatch.setattr(getpass, 'getpass', lambda prompt: 'new-token')
+        monkeypatch.setattr(getpass, 'getpass', lambda _prompt: 'new-token')
         action = LiquidManager().init
     with pytest.raises(KeyringError) as caught:
         action()
@@ -124,10 +126,11 @@ def test_keyring_failure_is_not_treated_as_a_missing_secret(location, monkeypatc
     assert 'Thank you' not in capsys.readouterr().out
 
 
-def test_init_retries_empty_and_rejected_values_then_saves_once(api_stub, terminal, monkeypatch, clean_environment, capsys):
+@pytest.mark.usefixtures('terminal')
+def test_init_retries_empty_and_rejected_values_then_saves_once(api_stub, monkeypatch, clean_environment, capsys):
     """Prevent malformed CLI input from reaching HTTP or being saved before read+execute validation."""
     values = iter(['', ' ', 'bad token', 'bad\ntoken', 'rejected', 'limited', 'accepted'])
-    monkeypatch.setattr(getpass, 'getpass', lambda prompt: next(values))
+    monkeypatch.setattr(getpass, 'getpass', lambda _prompt: next(values))
     def check(request):
         assert request.headers['Authorization'] in ('Bearer rejected', 'Bearer limited', 'Bearer accepted')
         token = request.headers['Authorization'].split()[1]
@@ -146,13 +149,14 @@ def test_init_retries_empty_and_rejected_values_then_saves_once(api_stub, termin
 
 @pytest.mark.parametrize('source', ['environment', 'keyring'])
 @pytest.mark.parametrize('interruption', [EOFError, KeyboardInterrupt])
-def test_existing_credential_notice_and_cancellation_leave_secret_intact(source, interruption, terminal, api_stub, monkeypatch, clean_environment, capsys):
+@pytest.mark.usefixtures('terminal', 'api_stub')
+def test_existing_credential_notice_and_cancellation_leave_secret_intact(source, interruption, monkeypatch, clean_environment, capsys):
     """Explicit init offers replacement while cancellation keeps the original credential."""
     slot = ('liquidcomp:https://api.mutating.tech/v1', 'LIQUID_TOKEN')
     clean_environment.values[slot] = 'stored-old'
     if source == 'environment':
         monkeypatch.setenv('LIQUID_TOKEN', 'environment-old')
-    def abort(prompt):
+    def abort(_prompt):
         raise interruption
     monkeypatch.setattr(getpass, 'getpass', abort)
     with pytest.raises(AuthenticationCancelledError):
@@ -166,10 +170,11 @@ def test_existing_credential_notice_and_cancellation_leave_secret_intact(source,
     assert 'environment-old' not in text
 
 
-def test_init_overwrites_keyring_but_environment_stays_authoritative(terminal, api_stub, monkeypatch, clean_environment, capsys):
+@pytest.mark.usefixtures('terminal')
+def test_init_overwrites_keyring_but_environment_stays_authoritative(api_stub, monkeypatch, clean_environment, capsys):
     """Replacing the saved token does not override the process environment."""
     monkeypatch.setenv('LIQUID_TOKEN', 'environment-token')
-    monkeypatch.setattr(getpass, 'getpass', lambda prompt: 'stored-new')
+    monkeypatch.setattr(getpass, 'getpass', lambda _prompt: 'stored-new')
     manager = LiquidManager()
     manager.init()
     isolate = manager.get(b'state')
@@ -179,9 +184,10 @@ def test_init_overwrites_keyring_but_environment_stays_authoritative(terminal, a
     assert 'LIQUID_TOKEN' in capsys.readouterr().out
 
 
-def test_automatic_prompt_calls_manager_init(terminal, api_stub, monkeypatch, clean_environment):
+@pytest.mark.usefixtures('terminal', 'api_stub')
+def test_automatic_prompt_calls_manager_init(monkeypatch, clean_environment):
     """The automatic and explicit CLI paths share the manager's one dialog entrypoint."""
-    monkeypatch.setattr(getpass, 'getpass', lambda prompt: 'new-token')
+    monkeypatch.setattr(getpass, 'getpass', lambda _prompt: 'new-token')
     calls = []
     original = LiquidManager.init
     def init(self):
@@ -196,12 +202,13 @@ def test_automatic_prompt_calls_manager_init(terminal, api_stub, monkeypatch, cl
 
 
 @pytest.mark.parametrize('mode', ['no_terminal', 'getpass_warning'])
-def test_init_refuses_any_echoing_fallback(mode, api_stub, monkeypatch, terminal):
+@pytest.mark.usefixtures('api_stub', 'terminal')
+def test_init_refuses_any_echoing_fallback(mode, monkeypatch):
     """A missing secure terminal must never fall back to an echoed password read."""
     if mode == 'no_terminal':
         monkeypatch.setattr(sys.stdin, 'isatty', lambda: False)
     else:
-        def warn(prompt):
+        def warn(_prompt):
             warnings.warn('echo', getpass.GetPassWarning, stacklevel=1)
             return 'secret'
         monkeypatch.setattr(getpass, 'getpass', warn)
@@ -210,9 +217,10 @@ def test_init_refuses_any_echoing_fallback(mode, api_stub, monkeypatch, terminal
 
 
 @pytest.mark.parametrize('failure', ['network', 'unavailable', 'malformed', 'wrong_scopes', 'deep_json', 'interrupted'])
-def test_init_does_not_save_or_thank_on_unconfirmed_validation(failure, terminal, api_stub, monkeypatch, clean_environment, capsys):
+@pytest.mark.usefixtures('terminal')
+def test_init_does_not_save_or_thank_on_unconfirmed_validation(failure, api_stub, monkeypatch, clean_environment, capsys):
     """Prevent saving unconfirmed tokens or leaking their HTTP client on validation failure or Ctrl+C."""
-    monkeypatch.setattr(getpass, 'getpass', lambda prompt: 'candidate')
+    monkeypatch.setattr(getpass, 'getpass', lambda _prompt: 'candidate')
     def check(request):
         if failure == 'interrupted':
             raise KeyboardInterrupt
@@ -234,14 +242,15 @@ def test_init_does_not_save_or_thank_on_unconfirmed_validation(failure, terminal
     assert 'Thank you' not in capsys.readouterr().out
 
 
-def test_token_is_never_loaded_from_ordinary_config_files(tmp_path, api_stub):
+@pytest.mark.usefixtures('api_stub')
+def test_token_is_never_loaded_from_ordinary_config_files(tmp_path):
     """Token acquisition remains env then keyring even when ordinary settings contain a token key."""
     (tmp_path / 'liquid.json').write_text(json.dumps({'token': 'config-secret'}))
     with pytest.raises(MissingTokenError):
         LiquidManager().get(b'state')
 
 
-def test_status_reports_missing_credentials_without_prompt(api_stub, clean_environment):
+def test_status_reports_missing_credentials_without_prompt(api_stub):
     """Status probes the server even when authentication has not been configured."""
     status = LiquidManager(settings=Settings(ask_for_token=True)).status()
     assert status.server_connected
@@ -271,7 +280,7 @@ def test_status_distinguishes_invalid_credentials_from_unknown_validity(code, va
 
 def test_status_distinguishes_connectivity_from_server_readiness(configured, api_stub):
     """A 503 health response proves a connection but not server readiness."""
-    api_stub.routes['GET', '/health/ready'] = lambda request: httpx.Response(503)
+    api_stub.routes['GET', '/health/ready'] = lambda _request: httpx.Response(503)
     status = configured.status()
     assert status.server_connected
     assert not status.server_ready

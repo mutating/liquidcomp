@@ -1,8 +1,10 @@
 """The installed plugin crosses a real HTTP boundary for commands and benchmarks."""
 
 import shlex
+import shutil
 import subprocess
 import sys
+import sysconfig
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from tarfile import open as open_tar
@@ -29,7 +31,7 @@ def python_command(source):
 
 @pytest.mark.parametrize(('credential', 'newline'), [('valid-token', '\n'), ('valid-company', '\r\n')])
 def test_installed_plugin_executes_chains_and_round_trips_state(mock_api, monkeypatch, tmp_path, credential, newline):
-    """Protect plugin state round trips and Linux output despite Windows host newline defaults."""
+    """Protect single-plugin selection, state round trips and Linux output on Windows mock hosts."""
     monkeypatch.setenv('LIQUID_TOKEN', credential)
     monkeypatch.setenv('LIQUID_API_URL', mock_api.url)
     monkeypatch.setenv('LIQUID_POLL_INTERVAL', '0.01')
@@ -45,7 +47,7 @@ def test_installed_plugin_executes_chains_and_round_trips_state(mock_api, monkey
     source.mkdir()
     (source / 'input.txt').write_text('original')
     (source / 'secret').write_text('excluded')
-    manager = throng['liquid'](source, exclude=['secret'])['liquid']
+    manager = throng['liquid'].one(source, exclude=['secret'])
     assert isinstance(manager, LiquidManager)
     with manager.scope as isolate:
         output = isolate.run(python_command("import sys; from pathlib import Path; print(Path('input.txt').read_text()); print('diagnostic', file=sys.stderr)"))
@@ -100,10 +102,10 @@ def test_uncertain_command_response_executes_exactly_once(mock_api, monkeypatch,
 
 
 @pytest.mark.parametrize('timestamp', [
-    '2026-10-19T12:30:00Z', '2026-10-19T15:30:00+03:00', '2026-10-19T08:30:00-04:00',
+    '2026-10-19T12:30:00.123456Z', '2026-10-19T15:30:00.123456+03:00', '2026-10-19T08:30:00.123456-04:00',
 ])
 def test_benchmark_metadata_follows_current_mock_api_measurements(timestamp, mock_api, monkeypatch, tmp_path):
-    """Prevent mixing historical suites, filling missing new scores from history or losing UTC conversion."""
+    """Prevent reruns exposing the first date, stale versions, filled gaps and lost UTC precision."""
     monkeypatch.setenv('LIQUID_TOKEN', 'valid-token')
     manager = LiquidManager(tmp_path, settings=Settings(api_url=mock_api.url))
     with manager.scope as isolate:
@@ -119,13 +121,28 @@ def test_benchmark_metadata_follows_current_mock_api_measurements(timestamp, moc
         partial = isolate.meta
         assert partial.resources.benchmarks.single_core is None
         assert partial.resources.benchmarks.multi_core.number == 9000
+        assert partial.resources.benchmarks.multi_core.benchmarker_version == '1.0.0'
+        assert partial.resources.benchmarks.multi_core.benchmarker == 'benchset'
+        assert partial.resources.benchmarks.multi_core.when.isoformat() == '2026-10-19T12:30:00.123456+00:00'
+        mock_api.benchmark_history.append(dict(mock_api.benchmarks[0]))
+        mock_api.benchmarks[0].update(number=9100, created_at='2026-10-20T12:30:00.654321Z')
+        rerun = isolate.meta.resources.benchmarks.multi_core
+        assert rerun.number == 9100
+        assert rerun.benchmarker_version == '1.0.0'
+        assert rerun.when.isoformat() == '2026-10-20T12:30:00.654321+00:00'
+        assert partial.resources.benchmarks.multi_core.when.isoformat() == '2026-10-19T12:30:00.123456+00:00'
+        mock_api.benchmarks[0]['benchmarker_version'] = '1.10.0-rc.2+build.7'
         mock_api.benchmarks.append({**mock_api.benchmarks[0], 'benchmark_name': 'single_core', 'number': 1000})
         complete = isolate.meta
         assert complete.resources.shared is True
         assert complete.resources.shared_with is None
         assert complete.resources.benchmarks.single_core.number == 1000
-        assert complete.resources.benchmarks.multi_core.number == 9000
-        assert complete.resources.benchmarks.single_core.when.isoformat() == '2026-10-19T12:30:00+00:00'
+        assert complete.resources.benchmarks.multi_core.number == 9100
+        for name in ('single_core', 'multi_core'):
+            measurement = getattr(complete.resources.benchmarks, name)
+            assert measurement.benchmarker_version == '1.10.0-rc.2+build.7'
+            assert measurement.benchmarker == 'benchset'
+            assert measurement.when.isoformat() == '2026-10-20T12:30:00.654321+00:00'
 
 
 def test_parallel_isolates_have_independent_state(mock_api, monkeypatch, tmp_path):
@@ -139,11 +156,18 @@ def test_parallel_isolates_have_independent_state(mock_api, monkeypatch, tmp_pat
 
 
 @pytest.mark.parametrize(('token', 'expected', 'word'), [(None, 1, 'missing'), ('valid-token', 0, 'valid'), ('bad', 1, 'invalid')])
-def test_cli_status_subprocess(cli_environment, token, expected, word):
-    """Prevent invalid/disconnected labels from passing substring checks for valid/connected status."""
+@pytest.mark.parametrize('entrypoint', ['module', 'console'])
+def test_cli_status_subprocess(cli_environment, token, expected, word, entrypoint):
+    """Prevent missing console scripts or invalid/disconnected labels from passing CLI checks."""
     if token is not None:
         cli_environment['LIQUID_TOKEN'] = token
-    process = subprocess.run([sys.executable, '-m', 'liquidcomp', 'status'], env=cli_environment, input='', capture_output=True, text=True, timeout=15, check=False)
+    if entrypoint == 'module':
+        command = [sys.executable, '-m', 'liquidcomp']
+    else:
+        executable = shutil.which('liquid', path=sysconfig.get_path('scripts'))
+        assert executable is not None
+        command = [executable]
+    process = subprocess.run([*command, 'status'], env=cli_environment, input='', capture_output=True, text=True, timeout=15, check=False)
     assert process.returncode == expected, process.stderr
     assert any(line.startswith('Token: ' + word) for line in process.stdout.splitlines())
     assert 'Server: connected, ready' in process.stdout.splitlines()
