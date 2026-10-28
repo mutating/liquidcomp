@@ -189,6 +189,7 @@ def test_provisioning_cannot_switch_isolate_identity(configured, api_stub):
 
 @pytest.mark.parametrize('kind', ['expired', 'wrong_id'])
 def test_invalid_lease_is_not_silently_used(kind, configured, api_stub):
+    """Reject invalid lease data without racing renewal failure against scope entry."""
     configured.settings.renew_interval = 0.01
     if kind == 'expired':
         api_stub.routes['POST', '/v1/isolates'] = lambda _request: httpx.Response(202, json={
@@ -197,8 +198,8 @@ def test_invalid_lease_is_not_silently_used(kind, configured, api_stub):
         with pytest.raises(IsolateUnavailableError):
             configured.get(b'state')
     else:
-        api_stub.routes['POST', '/v1/isolates/' + api_stub.isolate_id + '/renew'] = lambda _request: httpx.Response(200, json={'id': str(uuid4()), 'expires_at': '2099-01-01T00:00:00Z'})
         with configured.scope as isolate:
+            api_stub.routes['POST', '/v1/isolates/' + api_stub.isolate_id + '/renew'] = lambda _request: httpx.Response(200, json={'id': str(uuid4()), 'expires_at': '2099-01-01T00:00:00Z'})
             assert isolate._lease.stop.wait(2)
             with pytest.raises(ProtocolError):
                 isolate.run('work')

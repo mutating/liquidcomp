@@ -337,10 +337,12 @@ def test_lease_renewal_is_independent_of_command_execution(phase, configured, ap
 
 
 def test_renewal_failure_unblocks_waiting_command(configured, api_stub):
-    """A lost lease fails the waiter instead of leaving a daemon failure invisible."""
+    """Fail a waiting command on lease loss without racing isolate allocation."""
     configured.settings.renew_interval = 0.02
-    api_stub.routes['POST', f'/v1/isolates/{api_stub.isolate_id}/renew'] = lambda _request: httpx.Response(409)
-    api_stub.routes['POST', '/v1/commands/results'] = lambda _request: httpx.Response(200, json=[{'id': api_stub.command_id, 'status': 'running', 'result': None}])
+    def poll(_request):
+        api_stub.routes['POST', f'/v1/isolates/{api_stub.isolate_id}/renew'] = lambda _request: httpx.Response(409)
+        return httpx.Response(200, json=[{'id': api_stub.command_id, 'status': 'running', 'result': None}])
+    api_stub.routes['POST', '/v1/commands/results'] = poll
     with configured.scope as isolate, pytest.raises((IsolateUnavailableError, APIError)):
         isolate.run('work')
 
